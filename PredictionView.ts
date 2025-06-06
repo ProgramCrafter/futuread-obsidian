@@ -296,6 +296,16 @@ export class PredictionView extends TextFileView {
       label: bet.comment ?? '',
     }));
     items.push({ x: 0.0, y: 5 + Date.now(), label: '<now>' });
+    
+    let dateCallback = (items[items.length-1].y - items[0].y > 1000 * 3600 * 8)
+      ? (value: number) => {
+        const date = new Date(value);
+        return date.toLocaleDateString('hu').replaceAll('. ', '.');
+      }
+      : (value: number) => {
+        const date = new Date(value);
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      };
 
     this.chart = new Chart(ctx, {
       type: 'line',
@@ -333,13 +343,7 @@ export class PredictionView extends TextFileView {
             max: Math.max(...items.map(item => item.y)),
             grid: { color: '#3333' },
             title: { display: true, text: 'Time' },
-            ticks: {
-              source: 'data',
-              callback: (value: number) => {
-                const date = new Date(value);
-                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-              },
-            },
+            ticks: { callback: dateCallback },
           },
         },
         plugins: {
@@ -354,7 +358,7 @@ export class PredictionView extends TextFileView {
               label: (item: any) => {
                 const actual = item.parsed.x + this.market!.log2odds;
                 const prob = 100.0 / (1 + Math.pow(2, -actual));
-                const comment = (item.raw as any).comment || 'No comment';
+                const comment = (item.raw as any).label ?? 'No comment';
                 return `${actual.toFixed(2)} bits (${prob.toFixed(1)}%)\nComment: ${comment}`;
               },
             },
