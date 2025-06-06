@@ -85,6 +85,7 @@ export class PredictionView extends TextFileView {
   drawMe() {
     const container = this.contentEl;
     container.empty();
+    container.style.textAlign = 'center';
     
     if (this.market == undefined) return;
     const market = this.market;
@@ -155,6 +156,12 @@ export class PredictionView extends TextFileView {
             : `Payout ${market.userShares.toFixed(2)} upon YES`
     );
     container.createEl('h5', { text: sharesText });
+    
+    this.registerInterval(
+      window.setInterval(() => {
+        if (this.chart) this.chart.resize();
+      }, 1000)
+    );
   }
 }
 
