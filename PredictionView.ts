@@ -1,5 +1,7 @@
 import { TextFileView, WorkspaceLeaf, Setting } from 'obsidian';
-import Chart from 'chart.js/auto';
+import Chart, { ActiveElement, ChartConfiguration, ChartEvent } from 'chart.js/auto';
+import ChartDataLabels from 'chartjs-plugin-datalabels';
+import 'chartjs-adapter-date-fns'; // Import the date-fns adapter for time scales
 
 // Define the view type for the Obsidian plugin
 export const VIEW_TYPE_PREDICTION = 'prediction-market-view';
@@ -114,12 +116,22 @@ class MarketLogic {
       bets: updatedBets,
     };
   }
+  
+  // Update an existing bet
+  public updateBet(lt: number, amount: number, direction: 'YES' | 'NO', comment?: string): Bet {
+    if (!this.bets.has(lt)) throw new Error('Bet not found');
+    const bet = this.bets.get(lt)!;
+    bet.size.mana = amount;
+    bet.size.direction = direction;
+    bet.comment = comment;
+    return bet;
+  }
 
   // Place a new bet
-  public placeBet(amount: number, direction: 'YES' | 'NO', comment?: string): Bet {
+  public placeBet(amount: number, direction: 'YES' | 'NO', comment?: string, timestamp?: string): Bet {
     const lt = this.bets.size;
     const bet: Bet = {
-      timestamp: new Date().toISOString(),
+      timestamp: timestamp ?? new Date().toISOString(),
       size: { mana: amount, direction },
       comment,
       sharesReceived: 0,
@@ -178,7 +190,7 @@ export class PredictionView extends TextFileView {
       this.logic = new MarketLogic();
       // Reconstruct bets in logic
       this.market.bets.forEach((bet, lt) => {
-        this.logic.placeBet(bet.size.mana, bet.size.direction, bet.comment);
+        this.logic.placeBet(bet.size.mana, bet.size.direction, bet.comment, bet.timestamp);
       });
     } catch (e) {
       this.market = {
@@ -228,60 +240,16 @@ export class PredictionView extends TextFileView {
 
     // Chart container
     const canCon = container.createEl('div', { cls: 'market' });
+    canCon.style.position = 'relative';
     const canvas = canCon.createEl('canvas');
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Prepare chart data
-    const items = this.market.bets.map(bet => ({
-      x: bet.log2oddsBefore - this.market!.log2odds,
-      y: +new Date(bet.timestamp),
-    }));
-    items.push({ x: 0.0, y: +Date.now() });
-
-    this.chart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        datasets: [{
-          label: 'Log2Odds Progression',
-          data: items,
-          borderColor: '#4bc0c0',
-          tension: 0.1,
-          fill: false,
-          pointRadius: 3,
-          borderWidth: 2,
-        }],
-      },
-      options: {
-        responsive: true,
-        aspectRatio: 1.3,
-        scales: {
-          x: { type: 'linear', min: -4, max: 4, grid: { color: '#333' }, title: { display: true, text: 'Log2Odds Shifted' } },
-          y: { type: 'linear', reverse: true, display: false },
-        },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              title: (items) => {
-                const item = items[0];
-                const date = new Date(item.parsed.y);
-                return date.toLocaleString();
-              },
-              label: (item) => {
-                const actual = item.parsed.x + this.market!.log2odds;
-                const prob = 100.0 / (1 + Math.pow(2, -actual));
-                return `${actual.toFixed(2)} bits (${prob.toFixed(1)}%)`;
-              },
-            },
-          },
-        },
-      },
-    });
+    this.createChart(ctx, container);
 
     // Display current state
     const prob = probability * 100;
-    const stateText = `Bel<code>Belief: ${log2odds.toFixed(2)} bits (${prob.toFixed(1)}%</code>)`;
+    const stateText = `Belief: ${log2odds.toFixed(2)} bits (${prob.toFixed(1)}%)`;
     container.createEl('h5', { text: stateText });
 
     const sharesText = Math.abs(this.market.userShares) < 1e-7
@@ -318,5 +286,133 @@ export class PredictionView extends TextFileView {
         if (this.chart) this.chart.resize();
       }, 1000)
     );
+  }
+
+  // Create and configure the chart
+  private createChart(ctx: CanvasRenderingContext2D, container: HTMLElement): void {
+    const items = this.market!.bets.map(bet => ({
+      x: bet.log2oddsAfter - this.market!.log2odds,
+      y: +new Date(bet.timestamp),
+      label: bet.comment ?? '',
+    }));
+    items.push({ x: 0.0, y: 5 + Date.now(), label: '<now>' });
+
+    this.chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        datasets: [{
+          label: 'Log2Odds Progression',
+          data: items,
+          borderColor: '#4bc0c0',
+          tension: 0.1,
+          fill: false,
+          pointRadius: 3,
+          borderWidth: 2,
+          pointHitRadius: 10, // Increase hit area for clicking
+        }],
+      },
+      options: {
+        responsive: true,
+        aspectRatio: 1.3,
+        scales: {
+          x: { 
+            type: 'linear', 
+            min: -4, 
+            max: 4, 
+            grid: { color: '#3333' }, 
+            title: { display: true, text: 'Log2Odds Shifted' } 
+          },
+          y: { 
+            type: 'time',
+            time: {
+              parser: 'yyyy-MM-dd\'T\'HH:mm:ss.SSSX', // ISO 8601 format for timestamps
+              unit: 'hour',
+              displayFormats: { hour: 'HH:mm' }
+            },
+            min: Math.min(...items.map(item => item.y)),
+            max: Math.max(...items.map(item => item.y)),
+            grid: { color: '#3333' },
+            title: { display: true, text: 'Time' },
+            ticks: {
+              source: 'data',
+              callback: (value: number) => {
+                const date = new Date(value);
+                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              },
+            },
+          },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: (items: any[]) => {
+                const item = items[0];
+                const date = new Date(item.parsed.y);
+                return date.toLocaleString();
+              },
+              label: (item: any) => {
+                const actual = item.parsed.x + this.market!.log2odds;
+                const prob = 100.0 / (1 + Math.pow(2, -actual));
+                const comment = (item.raw as any).comment || 'No comment';
+                return `${actual.toFixed(2)} bits (${prob.toFixed(1)}%)\nComment: ${comment}`;
+              },
+            },
+          },
+          datalabels: {
+            align: 'right',
+            color: '#3098bb',
+            font:  {size: 15, weight: 'bold'},
+          },
+        },
+        onClick: (event: ChartEvent, elements: ActiveElement[]) => {
+          if (elements.length > 0) {
+            const index = elements[0].index;
+            const bet = this.market!.bets[index];
+            this.showEditForm(bet, index, event);
+          }
+        },
+      },
+      plugins: [ChartDataLabels],
+    } as ChartConfiguration);
+  }
+
+  // Show a hovering form to edit a bet
+  private showEditForm(bet: Bet, index: number, event: ChartEvent): void {
+    const container = this.contentEl.querySelector('div.market')!;
+    const form = container.createEl('div', { cls: 'edit-form', attr: { style: 'position: absolute; background: white; padding: 10px; border: 2px solid #ccc;' } });
+
+    const amountInput = form.createEl('input', { type: 'number', value: bet.size.mana.toString(), attr: { step: '1' } });
+    const directionSelect = form.createEl('select');
+    directionSelect.createEl('option', { text: 'YES', attr: { value: 'YES', selected: bet.size.direction === 'YES' } });
+    directionSelect.createEl('option', { text: 'NO', attr: { value: 'NO', selected: bet.size.direction === 'NO' } });
+    const commentInput = form.createEl('input', { type: 'text', value: bet.comment || '', attr: { placeholder: 'Comment (optional)' } });
+    const saveButton = form.createEl('button', { text: 'Save' });
+    const cancelButton = form.createEl('button', { text: 'Cancel' });
+
+    form.style.left = `${event.x! + 5}px`;
+    form.style.top = `${event.y! - 20}px`;
+
+    saveButton.addEventListener('click', () => {
+      const amount = parseFloat(amountInput.value);
+      const direction = directionSelect.value as 'YES' | 'NO';
+      const comment = commentInput.value || undefined;
+      if (isNaN(amount) || amount <= 0) {
+        alert('Please enter a valid amount');
+        return;
+      }
+      this.logic.updateBet(index, amount, direction, comment);
+      form.remove();
+      this.drawMe();
+    });
+
+    cancelButton.addEventListener('click', () => {
+      form.remove();
+    });
+
+    // Close form on outside click
+    container.addEventListener('click', (e) => {
+      if (!form.contains(e.target as Node)) form.remove();
+    }, { once: true });
   }
 }
